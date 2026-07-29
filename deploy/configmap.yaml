@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger-config
+  namespace: payments
+
+data:
+  APP_NAME: "ledger-api"
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "DEV"
