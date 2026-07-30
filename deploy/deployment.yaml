@@ -8,6 +8,11 @@ metadata:
 
 spec:
   replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
 
   selector:
     matchLabels:
@@ -17,14 +22,18 @@ spec:
     metadata:
       labels:
         app: ledger-api
+        rollout: stable
 
     spec:
       serviceAccountName: ledger-api-sa
 
       containers:
         - name: ledger-api
-          image: ledger-api:starter
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/your-github-org/ledger-api:latest
+          imagePullPolicy: Always
+          env:
+            - name: ROLLOUT_LABEL
+              value: stable
 
           securityContext:
             runAsNonRoot: true

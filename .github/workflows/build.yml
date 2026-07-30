@@ -6,97 +6,217 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
   security-events: write
   id-token: write
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ledger-api
+  K8S_NAMESPACE: payments
 
 jobs:
-  security-build:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r app/requirements.txt
 
-      ##################################################
-      # SAST - Semgrep
-      ##################################################
-      - name: Run Semgrep
+      - name: Run Semgrep SAST
+        id: semgrep
         uses: returntocorp/semgrep-action@v1
+        with:
+          config: auto
+          generateSarif: true
+        continue-on-error: true
 
-      ##################################################
-      # Secret Scan
-      ##################################################
-      - name: Run Gitleaks
+      - name: Upload Semgrep SARIF
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Run Gitleaks secrets scan
+        id: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
 
-      ##################################################
-      # Login to GHCR
-      ##################################################
+      - name: Run Trivy dependency/CVE scan
+        id: trivy-fs
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: ./app
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: 1
+          ignore-unfixed: true
+        continue-on-error: true
+
+      - name: Run Trivy warning scan
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: ./app
+          scanners: vuln
+          severity: MEDIUM,LOW
+          format: sarif
+          output: trivy-fs-warn.sarif
+          exit-code: 0
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      ##################################################
-      # Build Image
-      ##################################################
-      - name: Build Docker Image
+      - name: Prepare image metadata
+        id: meta
         run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/ledger-api:latest
-          docker build -t $IMAGE ./app
+          echo "image=${{ env.REGISTRY }}/${{ github.repository_owner }}/ledger-api" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_SHA::12}" >> $GITHUB_OUTPUT
 
-      ##################################################
-      # Trivy Image Scan
-      ##################################################
-      - name: Scan Docker Image
-        uses: aquasecurity/trivy-action@master
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} ./app
+
+      - name: Run Trivy image scan
+        id: trivy-image
+        uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/ledger-api:latest
+          scan-type: image
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
           format: table
-          exit-code: '0'
+          exit-code: 1
+          ignore-unfixed: true
+        continue-on-error: true
 
-      ##################################################
-      # Push Image
-      ##################################################
-      - name: Push Image
+      - name: Enforce security gate policy
+        if: always()
         run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/ledger-api:latest
-          docker push $IMAGE
+          if [ "${{ steps.semgrep.outcome }}" = "failure" ]; then
+            echo "Semgrep found issues and blocked the build."; exit 1; fi
+          if [ "${{ steps.gitleaks.outcome }}" = "failure" ]; then
+            echo "Gitleaks detected a secret and blocked the build."; exit 1; fi
+          if [ "${{ steps.trivy-fs.outcome }}" = "failure" ]; then
+            echo "Trivy dependency scan found HIGH/CRITICAL vulnerabilities without a fix."; exit 1; fi
+          if [ "${{ steps.trivy-image.outcome }}" = "failure" ]; then
+            echo "Trivy image scan found HIGH/CRITICAL vulnerabilities without a fix."; exit 1; fi
 
-      ##################################################
-      # Install Cosign
-      ##################################################
+      - name: Push image
+        if: success()
+        run: |
+          docker push ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          docker tag ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} ${{ steps.meta.outputs.image }}:latest
+          docker push ${{ steps.meta.outputs.image }}:latest
+
       - name: Install Cosign
+        if: success()
         uses: sigstore/cosign-installer@v3
 
-      ##################################################
-      # Sign Image (Keyless)
-      ##################################################
-      - name: Sign Image
+      - name: Sign image
+        if: success()
         run: |
-          cosign sign --yes ghcr.io/${{ github.repository_owner }}/ledger-api:latest
+          cosign sign --yes ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
 
-      ##################################################
-      # Generate Provenance
-      ##################################################
-      - name: Generate Provenance
+      - name: Create provenance predicate
+        if: success()
         run: |
-          cosign attest \
-            --yes \
-            --predicate <(echo '{}') \
-            --type slsaprovenance \
-            ghcr.io/${{ github.repository_owner }}/ledger-api:latest
+          cat > provenance.json <<EOF
+          {
+            "builder": {
+              "id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            },
+            "buildType": "https://actions.github.io/attestations/workflow/v1",
+            "invocation": {
+              "configSource": {
+                "uri": "https://github.com/${{ github.repository }}",
+                "digest": { "sha1": "${{ github.sha }}" }
+              },
+              "parameters": {
+                "image": "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+              }
+            },
+            "metadata": {
+              "buildStartedOn": "${{ github.run_id }}",
+              "buildFinishedOn": "${{ github.run_attempt }}"
+            },
+            "materials": [
+              {
+                "uri": "https://github.com/${{ github.repository }}",
+                "digest": { "sha1": "${{ github.sha }}" }
+              }
+            ]
+          }
+          EOF
+
+      - name: Generate provenance attestation
+        if: success()
+        run: |
+          cosign attest --yes --predicate provenance.json --type slsaprovenance ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+
+      - name: Verify signed image
+        if: success()
+        run: |
+          cosign verify ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} --certificate-identity-regexp '.*' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+
+      - name: Update GitOps manifest
+        if: success()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('deploy/deployment.yaml')
+          text = path.read_text()
+          image = '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}'
+          text = text.replace('image: ghcr.io/your-github-org/ledger-api:latest', f'image: {image}')
+          path.write_text(text)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/deployment.yaml
+          git commit -m "chore: deploy ledger-api ${{ steps.meta.outputs.tag }}" || echo "No changes to commit"
+          git push
+
+      - name: Install Argo CD CLI
+        if: success() && secrets.ARGOCD_SERVER != ''
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/download/v2.11.0/argo-cd-linux-amd64
+          chmod +x argocd
+          sudo mv argocd /usr/local/bin/argocd
+
+      - name: Sync Argo CD application
+        if: success() && secrets.ARGOCD_SERVER != ''
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} --username ${{ secrets.ARGOCD_USERNAME }} --password ${{ secrets.ARGOCD_PASSWORD }} --insecure
+          argocd app sync ledger-api
+          argocd app wait ledger-api --health --timeout 600
