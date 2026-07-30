@@ -59,7 +59,7 @@ jobs:
 
       - name: Run Trivy dependency/CVE scan
         id: trivy-fs
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: fs
           scan-ref: ./app
@@ -73,7 +73,7 @@ jobs:
 
       - name: Run Trivy warning scan
         if: always()
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: fs
           scan-ref: ./app
@@ -110,7 +110,7 @@ jobs:
 
       - name: Run Trivy image scan
         id: trivy-image
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: image
           image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
