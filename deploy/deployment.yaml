@@ -29,7 +29,7 @@ spec:
 
       containers:
         - name: ledger-api
-          image: ghcr.io/your-github-org/ledger-api:latest
+          image: ghcr.io/tulasikumar4449/ledger-api:latest
           imagePullPolicy: Always
           env:
             - name: ROLLOUT_LABEL
