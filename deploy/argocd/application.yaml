@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/your-org/ledger-api-assignment.git
+    repoURL: https://github.com/Tulasikumar4449/ledger-api-assignment.git
     targetRevision: main
     path: deploy
   destination:

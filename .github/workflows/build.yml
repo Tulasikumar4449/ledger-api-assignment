@@ -198,7 +198,7 @@ jobs:
           path = Path('deploy/deployment.yaml')
           text = path.read_text()
           image = '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}'
-          text = text.replace('image: ghcr.io/your-github-org/ledger-api:latest', f'image: {image}')
+          text = text.replace('image: ghcr.io/Tulasikumar4449/ledger-api:latest', f'image: {image}')
           path.write_text(text)
           PY
           git config user.name "github-actions[bot]"
@@ -207,16 +207,5 @@ jobs:
           git commit -m "chore: deploy ledger-api ${{ steps.meta.outputs.tag }}" || echo "No changes to commit"
           git push
 
-      - name: Install Argo CD CLI
-        if: success() && secrets.ARGOCD_SERVER != ''
-        run: |
-          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/download/v2.11.0/argo-cd-linux-amd64
-          chmod +x argocd
-          sudo mv argocd /usr/local/bin/argocd
-
-      - name: Sync Argo CD application
-        if: success() && secrets.ARGOCD_SERVER != ''
-        run: |
-          argocd login ${{ secrets.ARGOCD_SERVER }} --username ${{ secrets.ARGOCD_USERNAME }} --password ${{ secrets.ARGOCD_PASSWORD }} --insecure
-          argocd app sync ledger-api
-          argocd app wait ledger-api --health --timeout 600
+      
+          
