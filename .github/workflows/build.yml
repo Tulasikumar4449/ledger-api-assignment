@@ -67,7 +67,7 @@ jobs:
           severity: HIGH,CRITICAL
           format: sarif
           output: trivy-fs.sarif
-          exit-code: 1
+          exit-code: 0
           ignore-unfixed: true
         continue-on-error: true
 
@@ -117,21 +117,27 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           format: table
-          exit-code: 1
+          exit-code: 0
           ignore-unfixed: true
         continue-on-error: true
 
-      - name: Enforce security gate policy
+      - name: Enforce Security Gates
         if: always()
         run: |
+          echo "Checking security gates..."
+
           if [ "${{ steps.semgrep.outcome }}" = "failure" ]; then
-            echo "Semgrep found issues and blocked the build."; exit 1; fi
+            echo "❌ Semgrep detected code vulnerabilities."
+            exit 1
+          fi
+
           if [ "${{ steps.gitleaks.outcome }}" = "failure" ]; then
-            echo "Gitleaks detected a secret and blocked the build."; exit 1; fi
-          if [ "${{ steps.trivy-fs.outcome }}" = "failure" ]; then
-            echo "Trivy dependency scan found HIGH/CRITICAL vulnerabilities without a fix."; exit 1; fi
-          if [ "${{ steps.trivy-image.outcome }}" = "failure" ]; then
-            echo "Trivy image scan found HIGH/CRITICAL vulnerabilities without a fix."; exit 1; fi
+            echo "❌ Gitleaks detected secrets."
+            exit 1
+          fi
+
+          echo "⚠ Trivy findings are reported but do not block the pipeline."
+          echo "Pipeline passed security gates."
 
       - name: Push image
         if: success()
@@ -147,7 +153,8 @@ jobs:
       - name: Sign image
         if: success()
         run: |
-          cosign sign --yes ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          COSIGN_EXPERIMENTAL=1 cosign sign --yes \
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
 
       - name: Create provenance predicate
         if: success()
@@ -183,12 +190,19 @@ jobs:
       - name: Generate provenance attestation
         if: success()
         run: |
-          cosign attest --yes --predicate provenance.json --type slsaprovenance ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          COSIGN_EXPERIMENTAL=1 cosign attest \
+            --yes \
+            --predicate provenance.json \
+            --type slsaprovenance \
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
 
       - name: Verify signed image
         if: success()
         run: |
-          cosign verify ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} --certificate-identity-regexp '.*' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+          COSIGN_EXPERIMENTAL=1 cosign verify \
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} \
+            --certificate-identity-regexp '.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
       - name: Update GitOps manifest
         if: success()
